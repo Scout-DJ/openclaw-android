@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenClaw</string>
+    <string name="a11y_description">Allows your AI agent to view and interact with the screen — tap, type, swipe, and read content in any app.</string>
+</resources>
