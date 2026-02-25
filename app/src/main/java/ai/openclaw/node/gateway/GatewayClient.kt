@@ -1,5 +1,7 @@
 package ai.openclaw.node.gateway
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import okhttp3.*
 import java.util.concurrent.TimeUnit
@@ -31,6 +33,7 @@ class GatewayClient(
     }
 
     private var reconnectDelay = RECONNECT_DELAY_MS
+    private val handler = Handler(Looper.getMainLooper())
 
     fun connect() {
         shouldReconnect = true
@@ -115,9 +118,10 @@ class GatewayClient(
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
         Log.i(TAG, "Reconnecting in ${reconnectDelay}ms...")
-        Thread.sleep(reconnectDelay)
-        reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
-        if (shouldReconnect) doConnect()
+        handler.postDelayed({
+            reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+            if (shouldReconnect) doConnect()
+        }, reconnectDelay)
     }
 
     val isConnected get() = connected
