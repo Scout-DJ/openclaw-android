@@ -52,19 +52,43 @@ class NodeService : Service() {
         val token = intent.getStringExtra(EXTRA_AUTH_TOKEN) ?: return START_NOT_STICKY
         val name = intent.getStringExtra(EXTRA_NODE_NAME) ?: "android"
 
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Normalize URL: ensure ws:// or wss:// scheme for OkHttp
+        val wsUrl = when {
+            url.startsWith("ws://") || url.startsWith("wss://") -> url
+            url.startsWith("https://") -> url.replaceFirst("https://", "wss://")
+            url.startsWith("http://") -> url.replaceFirst("http://", "ws://")
+            else -> "ws://$url"
+        }
 
         gateway = GatewayClient(
-            gatewayUrl = url,
+            gatewayUrl = wsUrl,
             authToken = token,
             nodeName = name,
             onCommand = ::handleCommand,
             onConnectionChange = { connected ->
-                val status = if (connected) "Connected to $url" else "Disconnected — reconnecting..."
-                updateNotification(status)
+                try {
+                    val status = if (connected) "Connected to $url" else "Disconnected — reconnecting..."
+                    updateNotification(status)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to update notification", e)
+                }
             }
         )
-        gateway?.connect()
+
+        try {
+            gateway?.connect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to connect to gateway", e)
+            updateNotification("Connection failed: ${e.message}")
+        }
 
         return START_STICKY
     }
