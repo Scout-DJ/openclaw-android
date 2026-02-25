@@ -1,6 +1,7 @@
 package ai.openclaw.node.service
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
@@ -8,8 +9,8 @@ import androidx.core.app.NotificationCompat
 import ai.openclaw.node.App
 import ai.openclaw.node.MainActivity
 import ai.openclaw.node.gateway.GatewayClient
+import ai.openclaw.node.gateway.GatewayClient.ConnectionState
 import ai.openclaw.node.gateway.NodeCommand
-import ai.openclaw.node.gateway.NodeResponse
 import ai.openclaw.node.capabilities.*
 import org.json.JSONObject
 
@@ -25,6 +26,8 @@ class NodeService : Service() {
     companion object {
         private const val TAG = "NodeService"
         private const val NOTIFICATION_ID = 1
+        private const val PREFS_NAME = "openclaw_node"
+        private const val KEY_DEVICE_TOKEN = "device_token"
         const val EXTRA_GATEWAY_URL = "gateway_url"
         const val EXTRA_AUTH_TOKEN = "auth_token"
         const val EXTRA_NODE_NAME = "node_name"
@@ -32,13 +35,11 @@ class NodeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Register capabilities
         registerCapability(CameraCapability(this))
         registerCapability(LocationCapability(this))
         registerCapability(NotifyCapability(this))
         registerCapability(SensorCapability(this))
         registerCapability(FileCapability(this))
-        // More capabilities registered as implemented
     }
 
     private fun registerCapability(cap: Capability) {
@@ -52,43 +53,39 @@ class NodeService : Service() {
         val token = intent.getStringExtra(EXTRA_AUTH_TOKEN) ?: return START_NOT_STICKY
         val name = intent.getStringExtra(EXTRA_NODE_NAME) ?: "android"
 
-        try {
-            startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground service", e)
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // Generate a stable device ID from the app installation
+        val deviceId = getOrCreateDeviceId()
 
-        // Normalize URL: ensure ws:// or wss:// scheme for OkHttp
-        val wsUrl = when {
-            url.startsWith("ws://") || url.startsWith("wss://") -> url
-            url.startsWith("https://") -> url.replaceFirst("https://", "wss://")
-            url.startsWith("http://") -> url.replaceFirst("http://", "ws://")
-            else -> "ws://$url"
-        }
+        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
 
         gateway = GatewayClient(
-            gatewayUrl = wsUrl,
+            gatewayUrl = url,
             authToken = token,
             nodeName = name,
+            deviceId = deviceId,
             onCommand = ::handleCommand,
-            onConnectionChange = { connected ->
-                try {
-                    val status = if (connected) "Connected to $url" else "Disconnected — reconnecting..."
-                    updateNotification(status)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to update notification", e)
+            onConnectionChange = { state ->
+                val status = when (state) {
+                    ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
+                    ConnectionState.CONNECTING -> "Connecting..."
+                    ConnectionState.AWAITING_CHALLENGE -> "Authenticating..."
+                    ConnectionState.HANDSHAKING -> "Handshaking..."
+                    ConnectionState.PAIRING_PENDING -> "Pairing pending — approve on gateway"
+                    ConnectionState.CONNECTED -> "Connected to $url"
+                }
+                updateNotification(status)
+
+                // Persist device token when connected
+                if (state == ConnectionState.CONNECTED) {
+                    gateway?.getDeviceToken()?.let { saveDeviceToken(it) }
                 }
             }
         )
 
-        try {
-            gateway?.connect()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to connect to gateway", e)
-            updateNotification("Connection failed: ${e.message}")
-        }
+        // Restore saved device token
+        loadDeviceToken()?.let { gateway?.setDeviceToken(it) }
+
+        gateway?.connect()
 
         return START_STICKY
     }
@@ -96,28 +93,49 @@ class NodeService : Service() {
     private fun handleCommand(cmd: NodeCommand) {
         val cap = capabilities[cmd.action]
         if (cap == null) {
-            gateway?.send(NodeResponse(
+            gateway?.sendResponse(
                 id = cmd.id,
-                status = "error",
+                ok = false,
                 error = "Unknown action: ${cmd.action}"
-            ))
+            )
             return
         }
 
-        // Execute async
         Thread {
             try {
-                val response = cap.execute(cmd)
-                gateway?.send(response)
+                val result = cap.execute(cmd)
+                if (result.status == "ok") {
+                    val payload = JSONObject(result.data.toString())
+                    result.attachment?.let { payload.put("attachment", it) }
+                    gateway?.sendResponse(id = cmd.id, ok = true, payload = payload)
+                } else {
+                    gateway?.sendResponse(id = cmd.id, ok = false, error = result.error)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed: ${cmd.action}", e)
-                gateway?.send(NodeResponse(
-                    id = cmd.id,
-                    status = "error",
-                    error = e.message ?: "Unknown error"
-                ))
+                gateway?.sendResponse(id = cmd.id, ok = false, error = e.message ?: "Unknown error")
             }
         }.start()
+    }
+
+    private fun getOrCreateDeviceId(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        var id = prefs.getString("device_id", null)
+        if (id == null) {
+            id = "android-${java.util.UUID.randomUUID()}"
+            prefs.edit().putString("device_id", id).apply()
+        }
+        return id
+    }
+
+    private fun saveDeviceToken(token: String) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_DEVICE_TOKEN, token).apply()
+    }
+
+    private fun loadDeviceToken(): String? {
+        return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_DEVICE_TOKEN, null)
     }
 
     private fun buildNotification(text: String): Notification {
