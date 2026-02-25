@@ -56,7 +56,7 @@ class SensorCapability(private val context: Context) : Capability {
         return JSONObject().apply {
             put("ssid", info.ssid?.replace("\"", "") ?: "unknown")
             put("rssi", info.rssi)
-            put("linkSpeed", info.linkSpeedMbps)
+            put("linkSpeed", info.linkSpeed)
             put("ip", intToIp(info.ipAddress))
         }
     }
