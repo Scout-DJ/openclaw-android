@@ -56,24 +56,42 @@ class NodeService : Service() {
         // Generate a stable device ID from the app installation
         val deviceId = getOrCreateDeviceId()
 
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Normalize URL: ensure ws:// or wss:// scheme for OkHttp
+        val wsUrl = when {
+            url.startsWith("ws://") || url.startsWith("wss://") -> url
+            url.startsWith("https://") -> url.replaceFirst("https://", "wss://")
+            url.startsWith("http://") -> url.replaceFirst("http://", "ws://")
+            else -> "ws://$url"
+        }
 
         gateway = GatewayClient(
-            gatewayUrl = url,
+            gatewayUrl = wsUrl,
             authToken = token,
             nodeName = name,
             deviceId = deviceId,
             onCommand = ::handleCommand,
             onConnectionChange = { state ->
-                val status = when (state) {
-                    ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
-                    ConnectionState.CONNECTING -> "Connecting..."
-                    ConnectionState.AWAITING_CHALLENGE -> "Authenticating..."
-                    ConnectionState.HANDSHAKING -> "Handshaking..."
-                    ConnectionState.PAIRING_PENDING -> "Pairing pending — approve on gateway"
-                    ConnectionState.CONNECTED -> "Connected to $url"
+                try {
+                    val status = when (state) {
+                        ConnectionState.DISCONNECTED -> "Disconnected — reconnecting..."
+                        ConnectionState.CONNECTING -> "Connecting..."
+                        ConnectionState.AWAITING_CHALLENGE -> "Authenticating..."
+                        ConnectionState.HANDSHAKING -> "Handshaking..."
+                        ConnectionState.PAIRING_PENDING -> "Pairing pending — approve on gateway"
+                        ConnectionState.CONNECTED -> "Connected to $wsUrl"
+                    }
+                    updateNotification(status)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to update notification", e)
                 }
-                updateNotification(status)
 
                 // Persist device token when connected
                 if (state == ConnectionState.CONNECTED) {
